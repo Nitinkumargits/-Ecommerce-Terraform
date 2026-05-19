@@ -32,11 +32,32 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Verify required secrets are set
+        run: |
+          missing=0
+          for s in EC2_SSH_KEY MY_IP AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            if [ -z "${!s}" ]; then
+              echo "::error::Secret $s is unset or empty in repo settings."
+              missing=1
+            fi
+          done
+          [ "$missing" = "0" ] || exit 1
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          MY_IP: ${{ secrets.MY_IP }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
       - name: Derive public key from EC2_SSH_KEY
         run: |
-          echo "${{ secrets.EC2_SSH_KEY }}" > /tmp/ssh_key
+          echo "${{ secrets.EC2_SSH_KEY }}" | tr -d '\r' > /tmp/ssh_key
           chmod 600 /tmp/ssh_key
-          PUBLIC_KEY=$(ssh-keygen -y -f /tmp/ssh_key)
+          if ! PUBLIC_KEY=$(ssh-keygen -y -f /tmp/ssh_key 2>/tmp/ssh_err); then
+            echo "::error::Failed to derive public key from EC2_SSH_KEY."
+            echo "::error::Make sure the secret contains a full OpenSSH private key including the BEGIN/END header lines."
+            cat /tmp/ssh_err
+            exit 1
+          fi
           rm /tmp/ssh_key
           echo "TF_VAR_ec2_public_key=$PUBLIC_KEY" >> $GITHUB_ENV
 
