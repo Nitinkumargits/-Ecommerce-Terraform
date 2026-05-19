@@ -1,0 +1,79 @@
+name: Terraform Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy" to confirm tearing down ALL Ecommerce infra (VPC, EC2, EIP, security group, Route 53 records, TF state bucket). Cannot be undone.'
+        required: true
+
+jobs:
+  destroy:
+    name: Destroy Infrastructure
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.confirm == 'destroy' }}
+    defaults:
+      run:
+        working-directory: terraform
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ap-south-1
+      TF_VAR_my_ip: ${{ secrets.MY_IP }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Derive public key from EC2_SSH_KEY
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > /tmp/ssh_key
+          chmod 600 /tmp/ssh_key
+          PUBLIC_KEY=$(ssh-keygen -y -f /tmp/ssh_key)
+          rm /tmp/ssh_key
+          echo "TF_VAR_ec2_public_key=$PUBLIC_KEY" >> $GITHUB_ENV
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Destroy
+        run: terraform destroy -auto-approve
+
+      - name: Destroy S3 backend bucket
+        run: |
+          BUCKET=nitinkdevs-ecommerce-tf-state
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Emptying bucket $BUCKET (all object versions + delete markers)..."
+            aws s3api list-object-versions --bucket "$BUCKET" \
+              --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
+              --output json > /tmp/versions.json
+            if [ "$(jq '.Objects | length // 0' /tmp/versions.json)" -gt 0 ]; then
+              aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/versions.json
+            fi
+            aws s3api list-object-versions --bucket "$BUCKET" \
+              --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
+              --output json > /tmp/markers.json
+            if [ "$(jq '.Objects | length // 0' /tmp/markers.json)" -gt 0 ]; then
+              aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/markers.json
+            fi
+            echo "Deleting bucket $BUCKET..."
+            aws s3api delete-bucket --bucket "$BUCKET" --region ap-south-1
+          else
+            echo "Bucket $BUCKET does not exist — nothing to do."
+          fi
+
+      - name: Done
+        run: |
+          echo "─────────────────────────────────────────────────────"
+          echo "All Ecommerce infra has been destroyed, including the"
+          echo "S3 backend bucket (nitinkdevs-ecommerce-tf-state)."
+          echo ""
+          echo "What's still there (intentionally preserved):"
+          echo "  • Route 53   nitinkdevs.com hosted zone   (your root domain)"
+          echo "─────────────────────────────────────────────────────"

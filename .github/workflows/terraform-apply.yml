@@ -1,0 +1,113 @@
+name: Terraform Apply
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform-apply.yml'
+  workflow_dispatch:
+
+jobs:
+  terraform:
+    name: Provision Infrastructure
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ap-south-1
+      TF_VAR_my_ip: ${{ secrets.MY_IP }}
+
+    outputs:
+      ec2_ip: ${{ steps.ip.outputs.ip }}
+      ec2_id: ${{ steps.ip.outputs.id }}
+      ec2_az: ${{ steps.ip.outputs.az }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Derive public key from EC2_SSH_KEY
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > /tmp/ssh_key
+          chmod 600 /tmp/ssh_key
+          PUBLIC_KEY=$(ssh-keygen -y -f /tmp/ssh_key)
+          rm /tmp/ssh_key
+          echo "TF_VAR_ec2_public_key=$PUBLIC_KEY" >> $GITHUB_ENV
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Bootstrap S3 backend bucket
+        run: |
+          BUCKET=nitinkdevs-ecommerce-tf-state
+          REGION=ap-south-1
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Bucket $BUCKET already exists."
+          else
+            echo "Creating bucket $BUCKET in $REGION..."
+            aws s3api create-bucket \
+              --bucket "$BUCKET" \
+              --region "$REGION" \
+              --create-bucket-configuration LocationConstraint="$REGION"
+            aws s3api put-bucket-versioning \
+              --bucket "$BUCKET" \
+              --versioning-configuration Status=Enabled
+            aws s3api put-bucket-encryption \
+              --bucket "$BUCKET" \
+              --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+            aws s3api put-public-access-block \
+              --bucket "$BUCKET" \
+              --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          fi
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Import existing Route 53 records
+        run: |
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+            --dns-name nitinkdevs.com \
+            --query "HostedZones[0].Id" \
+            --output text | sed 's|/hostedzone/||')
+          terraform import aws_route53_record.ecommerce_a   "${ZONE_ID}_ecommerce.nitinkdevs.com_A"     2>/dev/null || true
+          terraform import aws_route53_record.ecommerce_www "${ZONE_ID}_www.ecommerce.nitinkdevs.com_A" 2>/dev/null || true
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Output EC2 info
+        id: ip
+        run: |
+          IP=$(terraform output -raw ec2_public_ip)
+          ID=$(terraform output -raw ec2_instance_id)
+          AZ=$(terraform output -raw ec2_availability_zone)
+          echo "ip=$IP" >> $GITHUB_OUTPUT
+          echo "id=$ID" >> $GITHUB_OUTPUT
+          echo "az=$AZ" >> $GITHUB_OUTPUT
+          {
+            echo "## Ecommerce infra provisioned"
+            echo ""
+            echo "| Output | Value |"
+            echo "|---|---|"
+            echo "| ec2_public_ip | \`$IP\` |"
+            echo "| ec2_instance_id | \`$ID\` |"
+            echo "| ec2_availability_zone | \`$AZ\` |"
+            echo ""
+            echo "DNS: \`ecommerce.nitinkdevs.com\` → \`$IP\`"
+            echo ""
+            echo "Next: run the **Deploy** workflow."
+          } >> $GITHUB_STEP_SUMMARY

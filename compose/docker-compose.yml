@@ -1,0 +1,26 @@
+services:
+  backend:
+    image: nitinkdocker18/ecommerce:${API_TAG:-api}
+    container_name: ecommerce-backend
+    restart: always
+    env_file:
+      - /opt/ecommerce/backend.env
+    ports:
+      - "127.0.0.1:4000:4000"
+    networks:
+      - ecommerce-net
+
+  frontend:
+    image: nitinkdocker18/ecommerce:${FRONTEND_TAG:-frontend}
+    container_name: ecommerce-frontend
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:8080:80"
+    networks:
+      - ecommerce-net
+
+networks:
+  ecommerce-net:
+    driver: bridge
