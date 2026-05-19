@@ -18,3 +18,4 @@ resource "aws_route53_record" "ecommerce_www" {
   ttl     = 300
   records = [aws_eip.ecommerce.public_ip]
 }
+ 
