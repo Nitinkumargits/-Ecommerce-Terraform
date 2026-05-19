@@ -1,0 +1,24 @@
+# Filled-in env files (template lives at backend.env.example)
+backend.env
+*.env
+!*.env.example
+
+# Terraform local state / plans / cache
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/tfplan
+terraform/*.tfplan
+terraform/crash.log
+
+# SSH keys accidentally dropped in the repo
+*.pem
+*_rsa
+*_ed25519
+*.ppk
+
+# OS junk
+.DS_Store
+Thumbs.db
+backend.env.example
